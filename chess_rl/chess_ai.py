@@ -89,7 +89,8 @@ class MinimaxWdlAI:
 
     def _maximize(self, board, depth, alpha, beta, net):
         best_score = -1.0
-        for move in self._ordered_moves(board):
+        moves = self._ordered_moves(board)
+        for move in moves:
             board.push(move)
             score = self._search(board, depth-1, alpha, beta, net)
             board.pop()
@@ -101,7 +102,8 @@ class MinimaxWdlAI:
 
     def _minimize(self, board, depth, alpha, beta, net):
         best_score = 2.0
-        for move in self._ordered_moves(board):
+        moves = self._ordered_moves(board)
+        for move in moves:
             board.push(move)
             score = self._search(board, depth-1, alpha, beta, net)
             board.pop()

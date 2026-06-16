@@ -28,14 +28,21 @@ HISTORY_HEIGHT = 170
 LIST_TOP = 126
 LIST_HEIGHT = 102
 LIST_GAP = 14
-WHITE_WIN_GRAPH_HEIGHT = 64
 WDL_ANIMATION_SECONDS = 1.5
 WDL_EASING_STRENGTH = 2.0
+MOVE_ANIMATION_SECONDS = 0.1
 DEFAULT_LC0_WEIGHTS = Path(__file__).resolve().parent.parent/"ckpts/t1-512x15x8h-distilled-swa-3395000.pb.gz"
 
 LIGHT_SQUARE = (238, 238, 210)
 DARK_SQUARE = (118, 150, 86)
 SELECTED_SQUARE = (246, 246, 105)
+LAST_MOVE_SQUARE = (255, 220, 40)
+LAST_MOVE_ALPHA = 128
+HINT_ARROW = (44, 82, 61)
+HINT_ARROW_ALPHA = 128
+HINT_ARROW_WIDTH = 24
+HINT_ARROW_HEAD_LENGTH = 54
+HINT_ARROW_HEAD_WIDTH = 27
 LEGAL_DOT = (180, 192, 180)
 LEGAL_DOT_ALPHA = 128
 PANEL_BG = (244, 245, 247)
@@ -70,6 +77,12 @@ STARTING_PIECE_COUNTS = {
     chess.BISHOP: 2,
     chess.PAWN: 8,
 }
+PROMOTION_OPTIONS = [
+    ("Q", chess.QUEEN),
+    ("R", chess.ROOK),
+    ("B", chess.BISHOP),
+    ("N", chess.KNIGHT),
+]
 AI_OPTIONS = {
     "greedy": GreedyWdlAI,
     "minimax-2": lambda: MinimaxWdlAI(depth=2),
@@ -117,7 +130,13 @@ class NumberBox:
         pygame.draw.rect(surface, bg, self.rect, border_radius=6)
         pygame.draw.rect(surface, BORDER, self.rect, width=1, border_radius=6)
         value = value_font.render(self.text, True, MUTED if disabled else TEXT)
-        surface.blit(value, value.get_rect(midleft=(self.rect.x+12, self.rect.centery)))
+        value_rect = value.get_rect(midleft=(self.rect.x+12, self.rect.centery))
+        surface.blit(value, value_rect)
+        if self.active and not disabled and pygame.time.get_ticks()%1000<520:
+            cursor_x = value_rect.right+2
+            y0 = self.rect.y+9
+            y1 = self.rect.bottom-9
+            pygame.draw.line(surface, TEXT, (cursor_x, y0), (cursor_x, y1), width=1)
 
     def handle_event(self, event, disabled=False):
         if disabled:
@@ -235,8 +254,8 @@ class ChessGameApp:
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("Arial", 20)
-        self.small_font = pygame.font.SysFont("Arial", 16)
-        self.mono_font = pygame.font.SysFont("Menlo", 15)
+        self.small_font = pygame.font.SysFont("Arial", 14)
+        self.mono_font = pygame.font.SysFont("Menlo", 14)
         self.large_font = pygame.font.SysFont("Arial", 28, bold=True)
         self.piece_images = self._load_piece_images()
         self.piece_shadows = self._load_piece_shadows()
@@ -246,24 +265,32 @@ class ChessGameApp:
         self.ai_name = "minimax-2"
         self.ai = self._make_ai(self.ai_name)
         self.two_part_wdl_bar = True
+        self.manual_board_flip = False
         self.controllers = {chess.WHITE: "Human", chess.BLACK: "Human"}
         self.pending_controllers = self.controllers.copy()
         x = BOARD_X+BOARD_SIZE+PANEL_PAD
         list_width = (PANEL_WIDTH-PANEL_PAD*2-LIST_GAP)//2
         self.history_rect = pygame.Rect(x, LIST_TOP, list_width, LIST_HEIGHT)
         self.legal_rect = pygame.Rect(x+list_width+LIST_GAP, LIST_TOP, list_width, LIST_HEIGHT)
-        self.total_box = NumberBox((x, 252, list_width, 40), "Total minutes", None, 1, 180)
-        self.step_box = NumberBox((self.legal_rect.x, 252, list_width, 40), "Overtime seconds", None, 1, 600)
-        self.wdl_button = Button((x, 328, 108, 42), "Show WDL")
-        self.bar_style_button = Button((x+120, 328, 104, 42), "Bar Style")
+        self.total_box = NumberBox((x, 260, list_width, 40), "Total minutes", None, 1, 180)
+        self.step_box = NumberBox((self.legal_rect.x, 260, list_width, 40), "Overtime seconds", None, 1, 600)
+        bottom_y = WINDOW_HEIGHT-64
+        self.wdl_button = Button((x, 310, 108, 42), "Show WDL")
+        self.bar_style_button = Button((x+120, 310, 104, 42), "Bar Style")
         self.copy_button = Button((x, 88, 80, 30), "Copy")
         self.undo_button = Button((x+92, 88, 80, 30), "Undo")
-        self.end_button = Button((x+236, 328, 112, 42), "End Game")
+        self.flip_button = Button((x+236, 18, 112, 30), "Flip")
+        self.end_button = Button((x+236, 310, 112, 42), "End Game")
         self.analyze_button = Button((self.legal_rect.x, 88, 92, 30), "Analyze")
-        self.white_control_button = Button((x, 388, 108, 30), "White: Human")
-        self.black_control_button = Button((x+120, 388, 108, 30), "Black: Human")
-        self.apply_control_button = Button((x+236, 388, 112, 30), "Apply")
-        self.ai_dropdown = Dropdown((x+82, 426, 146, 30), AI_OPTIONS.keys(), self.ai_name)
+        self.white_control_button = Button((x, 368, 108, 30), "White: Human")
+        self.black_control_button = Button((x+120, 368, 108, 30), "Black: Human")
+        self.apply_control_button = Button((x+236, 368, 112, 30), "Apply")
+        self.ai_dropdown = Dropdown((x+82, 408, 146, 30), AI_OPTIONS.keys(), self.ai_name)
+        self.hint_button = Button((x+236, 408, 112, 30), "Hint")
+        self.promotion_buttons = [
+            Button((x+116+i*38, bottom_y-34, 34, 28), label)
+            for i, (label, piece_type) in enumerate(PROMOTION_OPTIONS)
+        ]
         self.reset_game()
 
     def reset_game(self):
@@ -291,8 +318,15 @@ class ChessGameApp:
         self.controller_message_time = 0.0
         self.ai_thinking = False
         self.ai_search_task = None
+        self.ai_search_mode = None
+        self.move_animation = None
+        self.hint_move = None
+        self.selected_promotion = chess.QUEEN
         self.last_tick = pygame.time.get_ticks()
         self._set_clock_from_boxes()
+        self.controllers = {chess.WHITE: "Human", chess.BLACK: "Human"}
+        self.pending_controllers = self.controllers.copy()
+        self._sync_controller_labels()
         self.target_wdl = self.estimator.evaluate(self.board)
         self.display_wdl = self.target_wdl
         self.animation_start_wdl = self.display_wdl
@@ -330,6 +364,11 @@ class ChessGameApp:
                 self._clear_legal_cache()
         if self.bar_style_button.clicked(event, disabled=not self.show_wdl):
             self.two_part_wdl_bar = not self.two_part_wdl_bar
+        if self.flip_button.clicked(event):
+            self.manual_board_flip = not self.manual_board_flip
+        if self.hint_button.clicked(event, disabled=self._hint_button_disabled()):
+            self._set_hint_move()
+        self._handle_promotion_buttons(event)
         if self.copy_button.clicked(event, disabled=len(self.move_history)==0):
             self.copy_history()
         if self.undo_button.clicked(event, disabled=len(self.board.move_stack)==0):
@@ -373,8 +412,11 @@ class ChessGameApp:
             self.selected_square = None
 
     def undo_moves(self):
-        self.ai_search_task = None
-        steps = 2 if self._has_ai_controller() else 1
+        was_searching = self.ai_search_task is not None
+        self._cancel_ai_search()
+        self.move_animation = None
+        self.hint_move = None
+        steps = 1 if was_searching else 2 if self._has_ai_controller() else 1
         for _ in range(steps):
             if len(self.board.move_stack)==0:
                 return
@@ -401,6 +443,7 @@ class ChessGameApp:
 
     def update(self, dt):
         self._update_wdl_animation(dt)
+        self._update_move_animation(dt)
         self._update_legal_analysis()
         self._update_ai_search()
         self.copy_message_time = max(0.0, self.copy_message_time-dt)
@@ -419,31 +462,37 @@ class ChessGameApp:
         pygame.display.flip()
 
     def draw_board(self):
-        for rank in range(8):
-            for file in range(8):
-                square = chess.square(file, 7-rank)
-                color = LIGHT_SQUARE if (rank+file)%2==0 else DARK_SQUARE
+        for row in range(8):
+            for col in range(8):
+                square = self._square_for_cell(col, row)
+                color = LIGHT_SQUARE if (row+col)%2==0 else DARK_SQUARE
                 rect = pygame.Rect(
-                    BOARD_X+file*SQUARE_SIZE,
-                    BOARD_Y+rank*SQUARE_SIZE,
+                    BOARD_X+col*SQUARE_SIZE,
+                    BOARD_Y+row*SQUARE_SIZE,
                     SQUARE_SIZE,
                     SQUARE_SIZE,
                 )
                 if square==self.selected_square:
                     color = SELECTED_SQUARE
                 pygame.draw.rect(self.screen, color, rect)
+                self._draw_last_move_square(square, rect)
                 self._draw_piece(square, rect)
         self._draw_board_coordinates()
         self._draw_legal_targets()
+        self._draw_moving_piece()
+        self._draw_hint_arrow()
 
     def draw_captured_pieces(self):
-        self._draw_captured_row(chess.WHITE, BOARD_X, 2)
-        self._draw_captured_row(chess.BLACK, BOARD_X, BOARD_Y+BOARD_SIZE+2)
+        top_color = chess.BLACK if self._board_flipped() else chess.WHITE
+        bottom_color = chess.WHITE if self._board_flipped() else chess.BLACK
+        self._draw_captured_row(top_color, BOARD_X, 2)
+        self._draw_captured_row(bottom_color, BOARD_X, BOARD_Y+BOARD_SIZE+2)
 
     def draw_panel(self):
         x = BOARD_X+BOARD_SIZE+PANEL_PAD
-        title = self.large_font.render("Two Player Chess", True, TEXT)
+        title = self.large_font.render("CHESS GAME", True, TEXT)
         self.screen.blit(title, (x, 18))
+        self.flip_button.draw(self.screen, self.small_font)
         self._draw_history(x, 62)
         self._draw_legal_moves(self.legal_rect.x, 62)
         locked = self.game_started
@@ -459,11 +508,10 @@ class ChessGameApp:
         self.analyze_button.draw(self.screen, self.small_font, disabled=analyze_disabled)
         if self.legal_moves_analyzing:
             self._draw_legal_analysis_progress()
-        self._draw_clocks(x, 472)
+        self._draw_clocks(x, 462)
         self._draw_status(x, 586)
         if self.show_wdl:
             self._draw_wdl(x, 616)
-            self._draw_white_win_graph(x, 690)
         self._draw_panel_overlay()
 
     def draw_board_wdl_bar(self):
@@ -474,6 +522,8 @@ class ChessGameApp:
             self._draw_vertical_wdl_bar(0, BOARD_Y, white_win, draw, black_win)
 
     def _draw_piece(self, square, rect):
+        if self._is_animating_piece_on(square):
+            return
         piece = self.board.piece_at(square)
         if piece is None:
             return
@@ -483,6 +533,70 @@ class ChessGameApp:
         shadow = self.piece_shadows[(piece.piece_type, piece.color)]
         self.screen.blit(shadow, target.move(2, 2))
         self.screen.blit(image, target)
+
+    def _draw_moving_piece(self):
+        if self.move_animation is None:
+            return
+        t = float(np.clip(self.move_animation["elapsed"]/MOVE_ANIMATION_SECONDS, 0.0, 1.0))
+        start = np.asarray(self.move_animation["start"], dtype=np.float64)
+        end = np.asarray(self.move_animation["end"], dtype=np.float64)
+        center = start+(end-start)*t
+        key = self.move_animation["piece"]
+        image = self.piece_images[key]
+        target = image.get_rect(center=(int(round(center[0])), int(round(center[1]))))
+        shadow = self.piece_shadows[key]
+        self.screen.blit(shadow, target.move(2, 2))
+        self.screen.blit(image, target)
+
+    def _draw_hint_arrow(self):
+        if self.hint_move is None or self.hint_move not in self.board.legal_moves:
+            return
+        start = np.asarray(self._square_center(self.hint_move.from_square), dtype=np.float64)
+        end = np.asarray(self._square_center(self.hint_move.to_square), dtype=np.float64)
+        vector = end-start
+        length = float(np.linalg.norm(vector))
+        if length<=1.0:
+            return
+        direction = vector/length
+        left = np.asarray([-direction[1], direction[0]])
+        tip = end
+        base = end-direction*HINT_ARROW_HEAD_LENGTH
+        line_end = base+direction*(HINT_ARROW_WIDTH*0.5)
+        points = [
+            (int(round(tip[0])), int(round(tip[1]))),
+            (
+                int(round((base+left*HINT_ARROW_HEAD_WIDTH)[0])),
+                int(round((base+left*HINT_ARROW_HEAD_WIDTH)[1])),
+            ),
+            (
+                int(round((base-left*HINT_ARROW_HEAD_WIDTH)[0])),
+                int(round((base-left*HINT_ARROW_HEAD_WIDTH)[1])),
+            ),
+        ]
+        surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        color = (*HINT_ARROW, HINT_ARROW_ALPHA)
+        pygame.draw.line(
+            surface,
+            color,
+            (int(round(start[0])), int(round(start[1]))),
+            (int(round(line_end[0])), int(round(line_end[1]))),
+            width=HINT_ARROW_WIDTH,
+        )
+        pygame.draw.polygon(surface, color, points)
+        self.screen.blit(surface, (0, 0))
+
+    def _is_animating_piece_on(self, square):
+        return self.move_animation is not None and square==self.move_animation["move"].to_square
+
+    def _draw_last_move_square(self, square, rect):
+        if len(self.board.move_stack)==0:
+            return
+        move = self.board.move_stack[-1]
+        if square!=move.from_square and square!=move.to_square:
+            return
+        overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        overlay.fill((*LAST_MOVE_SQUARE, LAST_MOVE_ALPHA))
+        self.screen.blit(overlay, rect)
 
     def _draw_history(self, x, y):
         label = self.font.render("Move History", True, TEXT)
@@ -499,8 +613,11 @@ class ChessGameApp:
             self.screen.blit(text, (rect.x+12, rect.y+12))
             return
         for i, row in enumerate(visible_rows):
-            text = self.small_font.render(row, True, TEXT)
+            text = self.small_font.render(row["text"], True, TEXT)
             self.screen.blit(text, (rect.x+12, rect.y+10+i*20))
+            if self.show_wdl and row["rate"] is not None:
+                rate = self.mono_font.render(f"{row['rate']*100:6.2f}%", True, MUTED)
+                self.screen.blit(rate, (rect.right-rate.get_width()-14, rect.y+10+i*20))
         self._draw_list_scrollbar(rect, len(rows), max_rows, start)
         if self.copy_message_time>0.0:
             text = self.small_font.render(self.copy_message, True, MUTED)
@@ -560,6 +677,7 @@ class ChessGameApp:
         label_pos = (self.white_control_button.rect.x, self.ai_dropdown.rect.y+6)
         self.screen.blit(label, label_pos)
         self.ai_dropdown.draw(self.screen, self.small_font, draw_options=False)
+        self.hint_button.draw(self.screen, self.small_font, disabled=self._hint_button_disabled())
         if self.controller_message_time>0.0:
             text = self.small_font.render(self.controller_message, True, LOSS_TEXT)
             pos = (self.white_control_button.rect.x, self.ai_dropdown.rect.bottom+6)
@@ -603,12 +721,7 @@ class ChessGameApp:
         for move in self.board.legal_moves:
             if move.from_square!=self.selected_square:
                 continue
-            file = chess.square_file(move.to_square)
-            rank = 7-chess.square_rank(move.to_square)
-            center = (
-                BOARD_X+file*SQUARE_SIZE+SQUARE_SIZE//2,
-                BOARD_Y+rank*SQUARE_SIZE+SQUARE_SIZE//2,
-            )
+            center = self._square_center(move.to_square)
             self._draw_transparent_circle(center, 17, LEGAL_DOT, LEGAL_DOT_ALPHA)
 
     def _draw_transparent_circle(self, center, radius, color, alpha):
@@ -617,15 +730,17 @@ class ChessGameApp:
         self.screen.blit(surface, (center[0]-radius, center[1]-radius))
 
     def _draw_board_coordinates(self):
-        for rank in range(8):
-            label = str(8-rank)
+        for row in range(8):
+            rank = row+1 if self._board_flipped() else 8-row
+            label = str(rank)
             text = self.small_font.render(label, True, MUTED)
-            y = BOARD_Y+rank*SQUARE_SIZE+6
+            y = BOARD_Y+row*SQUARE_SIZE+6
             self.screen.blit(text, (BOARD_X+6, y))
-        for file in range(8):
-            label = chr(ord("a")+file)
+        for col in range(8):
+            file_index = 7-col if self._board_flipped() else col
+            label = chr(ord("a")+file_index)
             text = self.small_font.render(label, True, MUTED)
-            x = BOARD_X+file*SQUARE_SIZE+SQUARE_SIZE-text.get_width()-8
+            x = BOARD_X+col*SQUARE_SIZE+SQUARE_SIZE-text.get_width()-8
             y = BOARD_Y+BOARD_SIZE-text.get_height()-5
             self.screen.blit(text, (x, y))
 
@@ -653,6 +768,27 @@ class ChessGameApp:
             color = WIN_TEXT if "White" in status else LOSS_TEXT if "Black" in status else MUTED
         text = self.font.render(status, True, color)
         self.screen.blit(text, (x, y))
+        self._draw_promotion_buttons()
+
+    def _draw_promotion_buttons(self):
+        label = self.font.render("Promotion", True, MUTED)
+        x = BOARD_X+BOARD_SIZE+PANEL_PAD
+        first_rect = self.promotion_buttons[0].rect
+        self.screen.blit(label, (x, first_rect.y+2))
+        for button, (label, piece_type) in zip(self.promotion_buttons, PROMOTION_OPTIONS):
+            selected = piece_type==self.selected_promotion
+            color = INPUT_ACTIVE if selected else BUTTON
+            pygame.draw.rect(self.screen, color, button.rect, border_radius=5)
+            pygame.draw.rect(self.screen, BORDER, button.rect, width=1, border_radius=5)
+            text = self.small_font.render(label, True, TEXT)
+            self.screen.blit(text, text.get_rect(center=button.rect.center))
+
+    def _handle_promotion_buttons(self, event):
+        for button, (label, piece_type) in zip(self.promotion_buttons, PROMOTION_OPTIONS):
+            if button.clicked(event):
+                self.selected_promotion = piece_type
+                return
+        self._draw_promotion_buttons()
 
     def _draw_wdl(self, x, y):
         white_win, draw, black_win = self.estimator.evaluate(self.board)
@@ -673,6 +809,8 @@ class ChessGameApp:
         ]
         heights[2] = BOARD_SIZE-heights[0]-heights[1]
         segments = [(BLACK_BAR, heights[0]), (DRAW_BAR, heights[1]), (WHITE_BAR, heights[2])]
+        if self._board_flipped():
+            segments = list(reversed(segments))
         top = y
         for color, height in segments:
             if height>0:
@@ -684,6 +822,17 @@ class ChessGameApp:
         white_win_rate = white_win+0.5*draw
         white_height = int(round(BOARD_SIZE*white_win_rate))
         black_height = BOARD_SIZE-white_height
+        if self._board_flipped():
+            if white_height>0:
+                pygame.draw.rect(self.screen, WHITE_BAR, (x, y, WDL_BAR_WIDTH, white_height))
+            if black_height>0:
+                pygame.draw.rect(
+                    self.screen,
+                    BLACK_BAR,
+                    (x, y+white_height, WDL_BAR_WIDTH, black_height),
+                )
+            pygame.draw.rect(self.screen, BORDER, (x, y, WDL_BAR_WIDTH, BOARD_SIZE), width=1)
+            return
         if black_height>0:
             pygame.draw.rect(self.screen, BLACK_BAR, (x, y, WDL_BAR_WIDTH, black_height))
         if white_height>0:
@@ -694,31 +843,10 @@ class ChessGameApp:
             )
         pygame.draw.rect(self.screen, BORDER, (x, y, WDL_BAR_WIDTH, BOARD_SIZE), width=1)
 
-    def _draw_white_win_graph(self, x, y):
-        label = self.small_font.render("white_win_rate history", True, MUTED)
-        self.screen.blit(label, (x, y))
-        rect = pygame.Rect(x, y+22, PANEL_WIDTH-PANEL_PAD*2, WHITE_WIN_GRAPH_HEIGHT)
-        pygame.draw.rect(self.screen, INPUT_BG, rect, border_radius=6)
-        pygame.draw.rect(self.screen, BORDER, rect, width=1, border_radius=6)
-        mid_y = rect.y+rect.height//2
-        pygame.draw.line(self.screen, DRAW_BAR, (rect.x+8, mid_y), (rect.right-8, mid_y), width=1)
-        values = self.white_win_rate_history[-32:]
-        if len(values)==0:
-            return
-        points = self._graph_points(values, rect)
-        if len(points)==1:
-            pygame.draw.circle(self.screen, WIN_TEXT, points[0], 3)
-        else:
-            pygame.draw.lines(self.screen, WIN_TEXT, False, points, width=2)
-            for point in points:
-                pygame.draw.circle(self.screen, WIN_TEXT, point, 2)
-        latest = self.small_font.render(f"{values[-1]:.3f}", True, TEXT)
-        self.screen.blit(latest, (rect.right-latest.get_width()-8, rect.y+6))
-
     def _square_at(self, pos):
-        file = int((pos[0]-BOARD_X)//SQUARE_SIZE)
-        rank = 7-int((pos[1]-BOARD_Y)//SQUARE_SIZE)
-        return chess.square(file, rank)
+        col = int((pos[0]-BOARD_X)//SQUARE_SIZE)
+        row = int((pos[1]-BOARD_Y)//SQUARE_SIZE)
+        return self._square_for_cell(col, row)
 
     def _inside_board(self, pos):
         return BOARD_X<=pos[0]<BOARD_X+BOARD_SIZE and BOARD_Y<=pos[1]<BOARD_Y+BOARD_SIZE
@@ -729,7 +857,7 @@ class ChessGameApp:
         if piece is not None and piece.piece_type==chess.PAWN:
             to_rank = chess.square_rank(to_square)
             if to_rank==0 or to_rank==7:
-                promotion = chess.QUEEN
+                promotion = self.selected_promotion
         return chess.Move(from_square, to_square, promotion=promotion)
 
     def _start_clock(self):
@@ -767,9 +895,11 @@ class ChessGameApp:
 
     def _push_move(self, move):
         self._start_clock()
+        piece = self.board.piece_at(move.from_square)
         self.state_history.append(self._state_snapshot())
         self.move_history.append(self.board.san(move))
         self.board.push(move)
+        self._start_move_animation(move, piece)
         self._clear_legal_cache()
         self._set_target_wdl()
         self.white_win_rate_history.append(self._current_white_win_rate())
@@ -777,6 +907,7 @@ class ChessGameApp:
         self.legal_scroll = 0
         self._reset_step_time(self.board.turn)
         self.selected_square = None
+        self.hint_move = None
         self._sync_game_over()
 
     def _maybe_start_ai_search(self):
@@ -785,6 +916,7 @@ class ChessGameApp:
         self._start_clock()
         if hasattr(self.ai, "start_search"):
             self.ai_search_task = self.ai.start_search(self.board, self.estimator.net)
+            self.ai_search_mode = "move"
             return
         move = self.ai.choose_move(self.board, self.estimator.net)
         if move is not None and move in self.board.legal_moves:
@@ -797,9 +929,69 @@ class ChessGameApp:
         if not self.ai_search_task.finished:
             return
         move = self.ai_search_task.best_move
+        mode = self.ai_search_mode
         self.ai_search_task = None
+        self.ai_search_mode = None
+        if mode=="hint":
+            self.hint_move = move if move is not None and move in self.board.legal_moves else None
+            return
         if move is not None and move in self.board.legal_moves:
             self._push_move(move)
+
+    def _start_move_animation(self, move, piece):
+        if piece is None:
+            self.move_animation = None
+            return
+        self.move_animation = {
+            "move": move,
+            "piece": (piece.piece_type, piece.color),
+            "start": self._square_center(move.from_square),
+            "end": self._square_center(move.to_square),
+            "elapsed": 0.0,
+        }
+
+    def _update_move_animation(self, dt):
+        if self.move_animation is None:
+            return
+        self.move_animation["elapsed"] += dt
+        if self.move_animation["elapsed"]>=MOVE_ANIMATION_SECONDS:
+            self.move_animation = None
+
+    def _square_center(self, square):
+        col, row = self._cell_for_square(square)
+        return (
+            BOARD_X+col*SQUARE_SIZE+SQUARE_SIZE//2,
+            BOARD_Y+row*SQUARE_SIZE+SQUARE_SIZE//2,
+        )
+
+    def _square_for_cell(self, col, row):
+        if self._board_flipped():
+            return chess.square(7-col, row)
+        return chess.square(col, 7-row)
+
+    def _cell_for_square(self, square):
+        file = chess.square_file(square)
+        rank = chess.square_rank(square)
+        if self._board_flipped():
+            return 7-file, rank
+        return file, 7-rank
+
+    def _board_flipped(self):
+        return self._auto_board_flipped() != self.manual_board_flip
+
+    def _auto_board_flipped(self):
+        return self.controllers[chess.WHITE]=="AI" and self.controllers[chess.BLACK]=="Human"
+
+    def _hint_button_disabled(self):
+        return self.game_over or self.ai_search_task is not None or len(list(self.board.legal_moves))==0
+
+    def _set_hint_move(self):
+        self.hint_move = None
+        if hasattr(self.ai, "start_search"):
+            self.ai_search_task = self.ai.start_search(self.board, self.estimator.net)
+            self.ai_search_mode = "hint"
+            return
+        self.hint_move = self.ai.choose_move(self.board, self.estimator.net)
 
     def _charge_clock(self, color, dt):
         if self.game_over:
@@ -828,7 +1020,13 @@ class ChessGameApp:
     def _set_ai(self, ai_name):
         self.ai_name = ai_name
         self.ai = self._make_ai(ai_name)
+        self.hint_move = None
+        self._cancel_ai_search()
+
+    def _cancel_ai_search(self):
         self.ai_search_task = None
+        self.ai_search_mode = None
+        self.ai_thinking = False
 
     def _toggle_pending_controller(self, color):
         current = self.pending_controllers[color]
@@ -843,6 +1041,9 @@ class ChessGameApp:
             self.controller_message_time = 2.0
             return
         self.controllers = self.pending_controllers.copy()
+        if not self._is_ai_turn():
+            self._cancel_ai_search()
+        self.hint_move = None
         self.controller_message = ""
         self.controller_message_time = 0.0
         self._sync_controller_labels()
@@ -863,7 +1064,12 @@ class ChessGameApp:
             number = i//2+1
             white_move = self.move_history[i]
             black_move = self.move_history[i+1] if i+1<len(self.move_history) else ""
-            rows.append(f"{number}. {white_move}  {black_move}")
+            rate_index = i+2 if i+1<len(self.move_history) else i+1
+            rate = (
+                self.white_win_rate_history[rate_index]
+                if rate_index<len(self.white_win_rate_history) else None
+            )
+            rows.append({"text": f"{number}. {white_move}  {black_move}", "rate": rate})
         return rows
 
     def handle_panel_scroll(self, amount, pos=None):
@@ -877,7 +1083,7 @@ class ChessGameApp:
             self.legal_scroll = self._scrolled(self.legal_scroll, -amount, rows, self.legal_rect)
 
     def copy_history(self):
-        text = "\n".join(self._history_rows())
+        text = "\n".join(row["text"] for row in self._history_rows())
         if len(text)==0:
             return
         if self._copy_with_pbcopy(text):
@@ -996,15 +1202,6 @@ class ChessGameApp:
         max_start = row_count-visible_count
         thumb_y = track.y+int((track.height-thumb_h)*start/max_start)
         pygame.draw.rect(self.screen, BORDER, (track.x, thumb_y, track.width, thumb_h), border_radius=2)
-
-    def _graph_points(self, values, rect):
-        left = rect.x+10
-        right = rect.right-10
-        top = rect.y+10
-        bottom = rect.bottom-10
-        xs = np.linspace(left, right, len(values))
-        ys = [bottom-float(np.clip(value, 0.0, 1.0))*(bottom-top) for value in values]
-        return [(int(round(x)), int(round(y))) for x, y in zip(xs, ys)]
 
     def _current_white_win_rate(self):
         white_win, draw, black_win = self.estimator.evaluate(self.board)
